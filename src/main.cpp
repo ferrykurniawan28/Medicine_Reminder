@@ -164,6 +164,9 @@ void loop() {
     {
       currentState = 1;
       backlightOffTime = 0;
+    } else if (sensorValue < 10)
+    {
+      currentState = 9;
     } else if (backlightOffTime == 0) // If the backlight off time is not set yet
     {
       backlightOffTime = millis() + 5000; // Set the backlight off time to 5 seconds from now
@@ -175,6 +178,7 @@ void loop() {
     {
       backlightOffTime = millis() + 5000; // Reset the backlight off time to 5 seconds from now
     }
+    
     
     break;
   case 1:
@@ -385,7 +389,7 @@ void load_container(int sensorValue){
   lcd.print("Load Container");
   lcd.setCursor(0, 1);
   lcd.write(byte(3));
-  lcd.print("  ");
+  lcd.print(stringCurrentContainer(load));
   lcd.write(byte(2));
   if (sensorValue <10)
   {
@@ -527,10 +531,10 @@ void loadContainer(int containerIndex) {
     myStepper.step(steps);
 
     // Stop rotating if limit switch is pressed
-    while (digitalRead(limitSwitch) == HIGH) {
-        myStepper.setSpeed(5);
-        myStepper.step(steps);
-    }
+    // while (digitalRead(limitSwitch) == HIGH) {
+    //     myStepper.setSpeed(5);
+    //     myStepper.step(steps);
+    // }
 
     saveContainerState(containerIndex); // Save the current container index
 }
