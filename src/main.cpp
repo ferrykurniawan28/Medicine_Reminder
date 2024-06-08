@@ -18,26 +18,27 @@ Stepper myStepper = Stepper(stepsPerRevolution, 8, 10, 9, 11);
 
 int limitSwitch = 2;
 
-String morning = "7:30";
-String afternoon = "12:00";
-String evening = "19:00";
-int days = 1;
+// String morning = "7:30";
+// String afternoon = "12:00";
+// String evening = "19:00";
+int days = 0;
 
 bool morningSet = false;
 bool afternoonSet = false;
 bool eveningSet = false;
 
-int morningHour = morning.substring(0, morning.indexOf(':')).toInt();
-int morningMinute = morning.substring(morning.indexOf(':') + 1).toInt();
+int morningHour, morningMinute, afternoonHour, afternoonMinute, eveningHour, eveningMinute;
 
-int afternoonHour = afternoon.substring(0, afternoon.indexOf(':')).toInt();
-int afternoonMinute = afternoon.substring(afternoon.indexOf(':') + 1).toInt();
+int morningContainer[] = {0, 3, 6};
+int afternoonContainer[] = {1, 4, 7};
+int eveningContainer[] = {2, 5, 8};
 
-int eveningHour = evening.substring(0, evening.indexOf(':')).toInt();
-int eveningMinute = evening.substring(evening.indexOf(':') + 1).toInt();
+bool ContainerLoaded[] = {false, false, false, false, false, false, true, false, false}; // Array to keep track of which containers are loaded
 
 int currentState = 0;
 int containerState = 0;
+
+DateTime futureDate;
 
 // EEPROM addresses
 int morningHourAddress = 0;
@@ -49,8 +50,19 @@ int afternoonSetAddress = 5;
 int eveningHourAddress = 6;
 int eveningMinuteAddress = 7;
 int eveningSetAddress = 8;
-int alarmFlagAddress = 9;
 int currentStateContainer = 10;
+
+int Container0Address = 20;
+int Container1Address = 21;
+int Container2Address = 22;
+int Container3Address = 23;
+int Container4Address = 24;
+int Container5Address = 25;
+int Container6Address = 26;
+int Container7Address = 27;
+int Container8Address = 28;
+
+int limit = 650;              // Threshold for 40 degrees
 
 void date_time();
 void manydays(int sensorValue);
@@ -58,14 +70,21 @@ void ask_daily(int sensorValue, String time, int yesState, int noState, bool &se
 void set_day(int sensorValue, String time, int &hour, int &minute, int nextState);
 time_t convertToDateTime(int hour, int minute);
 void checkAlarms();
-void triggerAlarm(String message, int containerIndex);
-void loadContainer(int steps);
+void triggerAlarm(String message);
+void loadContainer(int containerIndex, int direction);
 void saveAlarmSettings();
 void loadAlarm();
 void saveContainerState(int containerIndex);
 int loadCurrentContainer();
 String stringCurrentContainer(int &index);
 void load_container(int sensorValue);
+void rotateStepper(int direction);
+void addDaysToDate(int numDays);
+void updateLoadedContainer(int containerIndex, bool loaded);
+bool isContainerLoaded(int containerIndex);
+int getNextContainerIndex(int container[], int size);
+bool checkAlarmDate(DateTime currentDate, DateTime future);
+
 
 byte arrowUp[] = {
   B00100,
@@ -111,13 +130,37 @@ byte arrowLeft[] = {
   B00000
 };
 
+byte cross[] = {
+  B10001,
+  B01010,
+  B00100,
+  B01010,
+  B10001,
+  B00000,
+  B00000,
+  B00000
+};
+
+byte check[] = {
+  B00000,
+  B00001,
+  B00010,
+  B10100,
+  B01000,
+  B00000,
+  B00000,
+  B00000
+};
+
 unsigned long backlightOffTime = 0; // Variable to store the time when the backlight should be turned off
 
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);
   pinMode(A0, INPUT);
-  pinMode(limitSwitch, INPUT_PULLUP);
+  // pinMode(limitSwitch, INPUT_PULLUP);
+  pinMode(A1, INPUT);
+  pinMode(13, OUTPUT);
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
@@ -125,6 +168,8 @@ void setup() {
   lcd.createChar(1, arrowDown);
   lcd.createChar(2, arrowRight);
   lcd.createChar(3, arrowLeft);
+  lcd.createChar(4, cross);
+  lcd.createChar(5, check);
 
   if (!rtc.begin()) {
     Serial.println("Couldn't find RTC");
@@ -134,6 +179,8 @@ void setup() {
     Serial.println("RTC is NOT running, let's set the time!");
     // When time needs to be set on a new device, or after a power loss, the
     // following line sets the RTC to the date & time this sketch was compiled
+    // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // adjust rtc time to current time on computer
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     // This line sets the RTC with an explicit date & time, for example to set
     // January 21, 2014 at 3am you would call:
@@ -141,17 +188,19 @@ void setup() {
   }
 
   loadAlarm();
+  loadCurrentContainer();
 
-  int savedContainer = loadCurrentContainer();
-    if (savedContainer >= 0 && savedContainer < 9) {
-        int steps = savedContainer * (stepsPerRevolution / 9); // Calculate steps for saved container
-        myStepper.setSpeed(5);
-        myStepper.step(steps);
-    }
+  // int savedContainer = loadCurrentContainer();
+  //   if (savedContainer >= 0 && savedContainer < 9) {
+  //       int steps = savedContainer * (stepsPerRevolution / 9); // Calculate steps for saved container
+  //       myStepper.setSpeed(5);
+  //       myStepper.step(steps);
+  //   }
 }
 
 void loop() {
   int sensorValue = analogRead(A0);
+  // Serial.println(sensorValue);
 
   
   
@@ -164,20 +213,22 @@ void loop() {
     {
       currentState = 1;
       backlightOffTime = 0;
-    } else if (sensorValue < 10)
+    } else if (sensorValue < 50)
     {
       currentState = 9;
-    } else if (backlightOffTime == 0) // If the backlight off time is not set yet
-    {
-      backlightOffTime = millis() + 5000; // Set the backlight off time to 5 seconds from now
-    }
-    else if (millis() >= backlightOffTime) // If the current time is past the backlight off time
-    {
-      lcd.noBacklight(); // Turn off the backlight
-    } else if (sensorValue <800)
-    {
-      backlightOffTime = millis() + 5000; // Reset the backlight off time to 5 seconds from now
-    }
+    } 
+    // else if (backlightOffTime == 0)
+    // {
+    //   backlightOffTime = millis() + 5000;
+    // }
+    // // else if (millis() >= backlightOffTime)
+    // // {
+    // //   lcd.noBacklight(); // Turn off the backlight
+    // // } 
+    // else
+    // {
+    //   backlightOffTime = millis() + 5000; // Reset the backlight off time to 5 seconds from now
+    // }
     
     
     break;
@@ -237,8 +288,7 @@ void loop() {
   //   lcd.print("Left");
   // } else if (sensorValue > 140 && sensorValue < 160)
   // {
-  //   // Serial.println("Down");
-  //   lcd.print("Down");
+      //  function down
   // } else if (sensorValue > 750 && sensorValue < 800)
   // {
   //   // Serial.println("Select");
@@ -282,7 +332,7 @@ void ask_daily(int sensorValue, String time, int yesState, int noState, bool &se
   lcd.print("      ");
   lcd.write(byte(2));
   lcd.print(" Yes ");
-  if (sensorValue < 10) {
+  if (sensorValue < 50) {
     currentState = yesState;
     set = true;
     saveAlarmSettings();
@@ -301,12 +351,12 @@ void manydays(int sensorValue){
     lcd.print("How Many Days?");
     lcd.setCursor(0, 1);
     lcd.print(days);
-      if (sensorValue > 300 && sensorValue < 315)
+      if (sensorValue > 300 && sensorValue < 350)
     {
       days++;
-    } else if (sensorValue > 140 && sensorValue < 160)
+    } else if (sensorValue > 140 && sensorValue < 190)
     {
-      if (days == 1)
+      if (days == 0)
       {
         
       } else
@@ -315,9 +365,31 @@ void manydays(int sensorValue){
       }
     } else if (sensorValue > 750 && sensorValue < 800)
     {
+      addDaysToDate(days);
+      delay(2000);
       currentState = 2;
     }
     delay(170);
+}
+
+void addDaysToDate(int numDays) {
+    DateTime now = rtc.now(); // Get the current date and time
+
+    // Add the specified number of days to the current date
+    futureDate = now + TimeSpan(numDays, 0, 0, 0);
+
+    // Display the new date on the LCD
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Reminder Until:");
+    lcd.setCursor(0, 1);
+    lcd.print(futureDate.day());
+    lcd.print("/");
+    lcd.print(futureDate.month());
+    lcd.print("/");
+    lcd.print(futureDate.year());
+
+    delay(5000); // Delay to show the new date
 }
 
 void set_day(int sensorValue, String time, int &hour, int &minute, int nextState){
@@ -338,7 +410,7 @@ void set_day(int sensorValue, String time, int &hour, int &minute, int nextState
     lcd.print("+M ");
     lcd.write(byte(3));
     lcd.print("-M ");
-      if (sensorValue > 300 && sensorValue < 315)
+      if (sensorValue > 300 && sensorValue < 350)
       {
         hour++;
         delay(170);
@@ -347,7 +419,7 @@ void set_day(int sensorValue, String time, int &hour, int &minute, int nextState
           hour -= 24;
         }
         
-      } else if (sensorValue > 140 && sensorValue < 160)
+      } else if (sensorValue > 140 && sensorValue < 190)
       {
         hour--;
         delay(170);
@@ -360,7 +432,7 @@ void set_day(int sensorValue, String time, int &hour, int &minute, int nextState
       {
         currentState = nextState;
         saveAlarmSettings();
-      } else if (sensorValue < 10)
+      } else if (sensorValue < 50)
       {
         minute++;
         delay(170);
@@ -381,31 +453,72 @@ void set_day(int sensorValue, String time, int &hour, int &minute, int nextState
     delay(170);
 }
 
-void load_container(int sensorValue){
-  int load = currentStateContainer;
+void load_container(int sensorValue) {
+  int load = containerState;
   lcd.clear();
   lcd.setBacklight(HIGH);
   lcd.setCursor(0, 0);
   lcd.print("Load Container");
   lcd.setCursor(0, 1);
   lcd.write(byte(3));
+  lcd.print(" ");
   lcd.print(stringCurrentContainer(load));
+  lcd.print(" ");
   lcd.write(byte(2));
-  if (sensorValue <10)
-  {
-    load++;
-    loadContainer(load);
-  } else if (sensorValue > 750 && sensorValue < 800)
-  {
-    currentState = 0;
-  } else if (sensorValue > 490 && sensorValue < 510)
-  {
-    load--;
-    loadContainer(load);
+  lcd.print(" ");
+  lcd.print(load + 1);
+  if (isContainerLoaded(load)) {
+    lcd.write(byte(5));
+  } else {
+    lcd.write(byte(4));
   }
-  
+
+  // Serial.println(sensorValue);
+  if (sensorValue < 50) {
+    if (load >= 8) {
+      load = 0;
+    } else {
+      load++;
+    }
+    loadContainer(load, 1);
+  } else if (sensorValue > 750 && sensorValue < 800) {
+    currentState = 0;
+  } else if (sensorValue > 490 && sensorValue < 510) {
+    if (load <= 0) {
+      load = 8;
+    } else {
+      load--;
+    }
+    loadContainer(load, -1);
+  } else if (sensorValue > 300 && sensorValue < 350) {
+    updateLoadedContainer(load, true);
+  } else if (sensorValue > 140 && sensorValue < 190) {
+    updateLoadedContainer(load, false);
+  }
+
   delay(170);
 }
+
+// get the next container index that is loaded
+int getNextContainerIndex(int container[], int size) {
+    for (int i = 0; i < size; i++) {
+        if (ContainerLoaded[container[i]]) {
+            return container[i];
+        }
+    }
+    return -1; // No available container
+}
+
+
+// int getNextContainerIndex(int container[], int size) {
+//     for (int i = 0; i < size; i++) {
+//         if (!ContainerLoaded[container[i]]) {
+//             return container[i];
+//         }
+//     }
+//     return -1; // No available container
+// }
+
 
 time_t convertToDateTime(int hour, int minute) {
   // Get the current date
@@ -443,16 +556,55 @@ void checkAlarms() {
 
   // Check and trigger alarms
   if (currentTime == morningAlarm && morningSet) {
-    triggerAlarm("Morning Alarm!", 0);
-    morningSet = false; // Reset the alarm once triggered
+    // Serial.println("Morning alarm triggered!");
+    int targetIndex = getNextContainerIndex(morningContainer, sizeof(morningContainer) / sizeof(morningContainer[0]));
+    Serial.println(targetIndex);
+    if (targetIndex != -1 && checkAlarmDate(now,futureDate))
+    {
+      Serial.println("Loading container...");
+      loadContainer(targetIndex, 1);
+      Serial.println("Container loaded!");
+
+      Serial.println("Saving container state...");
+      saveContainerState(targetIndex);
+      Serial.println("Container state saved!");
+      triggerAlarm("Morning Alarm!");
+    } else
+    {
+      morningSet = false;
+    }
+    // triggerAlarm("Morning Alarm!", targetIndex);
+    
   } else if (currentTime == afternoonAlarm && afternoonSet) {
-    triggerAlarm("Afternoon Alarm!", 3);
-    afternoonSet = false; // Reset the alarm once triggered
+    int targetIndex = getNextContainerIndex(morningContainer, sizeof(morningContainer) / sizeof(morningContainer[0]));
+    if (targetIndex != -1 && checkAlarmDate(now,futureDate))
+    {
+      triggerAlarm("Afternoon Alarm!");
+    } else
+    {
+      afternoonSet = false;
+    }
+    
   } else if (currentTime == eveningAlarm && eveningSet) {
-    triggerAlarm("Evening Alarm!", 6);
-    eveningSet = false; // Reset the alarm once triggered
+    int targetIndex = getNextContainerIndex(morningContainer, sizeof(morningContainer) / sizeof(morningContainer[0]));
+    if (targetIndex != -1 && checkAlarmDate(now,futureDate))
+    {
+      triggerAlarm("Evening Alarm!");
+    } else
+    {
+      eveningSet = false;
+    }
+    
   }
 }
+
+bool checkAlarmDate(DateTime currentDate, DateTime future) {
+  if (currentDate.year() <= future.year() && currentDate.month() <= future.month() && currentDate.day() <= future.day()) {
+    return true;
+  }
+  return false;
+}
+
 
 void saveAlarmSettings() {
   // Save alarm settings to EEPROM
@@ -466,77 +618,135 @@ void saveAlarmSettings() {
   EEPROM.write(eveningMinuteAddress, eveningMinute);
   EEPROM.write(eveningSetAddress, eveningSet);
   
-  byte alarmFlag = 0;
-  alarmFlag |= morningSet << 0;
-  alarmFlag |= afternoonSet << 1;
-  alarmFlag |= eveningSet << 2;
-  EEPROM.write(alarmFlagAddress, alarmFlag);
+  // byte alarmFlag = 0;
+  // alarmFlag |= morningSet << 0;
+  // alarmFlag |= afternoonSet << 1;
+  // alarmFlag |= eveningSet << 2;
+  // EEPROM.write(alarmFlagAddress, alarmFlag);
 }
 
 void loadAlarm(){
   // Load alarm settings from EEPROM
-  morningHour = EEPROM.read(morningHourAddress);
-  morningMinute = EEPROM.read(morningMinuteAddress);
-  morningSet = EEPROM.read(morningSetAddress);
-  afternoonHour = EEPROM.read(afternoonHourAddress);
-  afternoonMinute = EEPROM.read(afternoonMinuteAddress);
-  afternoonSet = EEPROM.read(afternoonSetAddress);
-  eveningHour = EEPROM.read(eveningHourAddress);
-  eveningMinute = EEPROM.read(eveningMinuteAddress);
-  eveningSet = EEPROM.read(eveningSetAddress);
+  if (EEPROM.read(morningHourAddress) != 255)
+  {
+    morningHour = EEPROM.read(morningHourAddress);
+  } else
+  {
+    morningHour = 8;
+  }
+  
+  if (EEPROM.read(morningMinuteAddress) != 255)
+  {
+    morningMinute = EEPROM.read(morningMinuteAddress);
+  } else
+  {
+    morningMinute = 20;
+  }
+  
+  if (EEPROM.read(morningSetAddress) != 255)
+  {
+    morningSet = EEPROM.read(morningSetAddress);
+  } else
+  {
+    morningSet = morningSet;
+  }
+  
+  if (EEPROM.read(afternoonHourAddress) != 255)
+  {
+    afternoonHour = EEPROM.read(afternoonHourAddress);
+  } else
+  {
+    afternoonHour = 12;
+  }
+  
+  if (EEPROM.read(afternoonMinuteAddress) != 255)
+  {
+    afternoonMinute = EEPROM.read(afternoonMinuteAddress);
+  } else
+  {
+    afternoonMinute = 20;
+  }
 
-  byte alarmFlag = EEPROM.read(alarmFlagAddress);
-  morningSet = alarmFlag & (1 << 0);
-  afternoonSet = alarmFlag & (1 << 1);
-  eveningSet = alarmFlag & (1 << 2);
+  if (EEPROM.read(afternoonSetAddress) != 255)
+  {
+    afternoonSet = EEPROM.read(afternoonSetAddress);
+  } else
+  {
+    afternoonSet = afternoonSet;
+  }
+
+  if (EEPROM.read(eveningHourAddress) != 255)
+  {
+    eveningHour = EEPROM.read(eveningHourAddress);
+  } else
+  {
+    eveningHour = 20;
+  }
+  
+  if (EEPROM.read(eveningMinuteAddress) != 255)
+  {
+    eveningMinute = EEPROM.read(eveningMinuteAddress);
+  } else
+  {
+    eveningMinute = 20;
+  }
+
+  if (EEPROM.read(eveningSetAddress) != 255)
+  {
+    eveningSet = EEPROM.read(eveningSetAddress);
+  } else
+  {
+    eveningSet = eveningSet;
+  }
 
 }
 
-void triggerAlarm(String message, int containerIndex) {
+void triggerAlarm(String message) {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(message);
-  saveContainerState(containerIndex);
-  // rotate stepper motor 40 degrees
-  myStepper.setSpeed(5);
-  myStepper.step(40);
+  lcd.setCursor(0, 1);
+  lcd.print("Container ");
+  lcd.print(containerState + 1);
 
-  // stop rotating if limit switch is pressed
-  while (digitalRead(limitSwitch) == HIGH) {
-    myStepper.setSpeed(5);
-    myStepper.step(40);
-  }
-
-  lcd.setBacklight(HIGH); // Turn on the backlight
   digitalWrite(13, HIGH); // Turn on the LED
-  delay(500); // Keep the message on screen for 5 seconds
-  lcd.setBacklight(LOW); // Turn off the backlight
-  digitalWrite(13, LOW); // Turn off the LED
-  delay(500); // Keep the message on screen for 5 seconds
   lcd.setBacklight(HIGH); // Turn on the backlight
+  delay(500); // Keep the message on screen for 5 seconds
+  digitalWrite(13, LOW); // Turn on the LED
+  lcd.setBacklight(LOW); // Turn on the backlight
+  delay(500); // Keep the message on screen for 5 seconds
   digitalWrite(13, HIGH); // Turn on the LED
-  delay(500); // Keep the message on screen for 5 seconds
-  lcd.setBacklight(LOW); // Turn off the backlight
-  digitalWrite(13, LOW); // Turn off the LED
-  delay(500); // Keep the message on screen for 5 seconds
   lcd.setBacklight(HIGH); // Turn on the backlight
+  delay(500); // Keep the message on screen for 5 seconds
+  digitalWrite(13, LOW); // Turn on the LED
+  lcd.setBacklight(LOW); // Turn on the backlight
+  delay(500); // Keep the message on screen for 5 seconds
   digitalWrite(13, HIGH); // Turn on the LED
-  delay(500);
+  lcd.setBacklight(HIGH); // Turn on the backlight
+  delay(500); // Keep the message on screen for 5 seconds
+  digitalWrite(13, LOW); // Turn on the LED
+  lcd.setBacklight(HIGH); // Turn on the backlight
+  delay(500); // Keep the message on screen for 5 seconds
+  
+  currentState = 0;
 }
 
 // need to adjust the steps to load the container
-void loadContainer(int containerIndex) {
-    int steps = containerIndex * (stepsPerRevolution / 9); // Calculate steps for target container
-    myStepper.setSpeed(5);
-    myStepper.step(steps);
-
-    // Stop rotating if limit switch is pressed
-    // while (digitalRead(limitSwitch) == HIGH) {
-    //     myStepper.setSpeed(5);
-    //     myStepper.step(steps);
-    // }
-
-    saveContainerState(containerIndex); // Save the current container index
+void loadContainer(int containerIndex, int direction) {
+  while (containerIndex != containerState) {
+    rotateStepper(direction);
+    if (direction > 0) {
+      containerState++;
+      if (containerState > 8) {
+        containerState = 0;
+      }
+    } else {
+      containerState--;
+      if (containerState < 0) {
+        containerState = 8;
+      }
+    }
+  }
 }
 
 
@@ -546,7 +756,14 @@ void saveContainerState(int containerIndex) {
 }
 
 int loadCurrentContainer(){
-  containerState = EEPROM.read(currentStateContainer);
+  if (EEPROM.read(currentStateContainer) != 255)
+  {
+    containerState = EEPROM.read(currentStateContainer);
+  } else
+  {
+    containerState = 0;
+  }
+  
 
   return containerState;
 }
@@ -586,4 +803,38 @@ String stringCurrentContainer(int &index){
     break;
   }
   return container;
+}
+
+void rotateStepper(int direction) {
+  int currentVal = analogRead(A1);
+  Serial.println(currentVal);
+
+  do {
+    while (currentVal < limit)
+    {
+      myStepper.step(stepsPerRevolution / 360 * direction); // Move one degree at a time
+      delay(10);
+      currentVal = analogRead(A1); // Update currentVal inside the loop
+      Serial.println(currentVal);
+    }
+    myStepper.step(stepsPerRevolution / 360 * direction); // Move one degree at a time
+    delay(10);
+    currentVal = analogRead(A1); // Update currentVal inside the loop
+    Serial.println(currentVal);
+  } while (currentVal > limit);
+
+  // stop the stepper
+  myStepper.step(0);
+}
+
+void updateLoadedContainer(int containerIndex, bool loaded) {
+  for (int i = 0; i < 9; i++) {
+    if (i == containerIndex) {
+      ContainerLoaded[i] = loaded;
+    }
+  }
+}
+
+bool isContainerLoaded(int containerIndex) {
+  return ContainerLoaded[containerIndex];
 }
